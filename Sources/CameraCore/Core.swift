@@ -58,8 +58,14 @@ public enum LegacyImporter {
             return result
         }
 
-        let deviceRows = try rows("SELECT GUID, Name, LoginAddress FROM HikDevice ORDER BY Name", columns: 3)
-        let channelRows = try rows("SELECT GUID, DeviceGUID, Name, ChannelNo FROM Channel WHERE ChannelType IN (1,2) ORDER BY ChannelNo", columns: 4)
+        let deviceColumns = Set(try rows("PRAGMA table_info(HikDevice)", columns: 2).map { $0[1] })
+        func deviceColumn(_ name: String) -> String { deviceColumns.contains(name) ? "COALESCE(\(name), 0)" : "0" }
+        let deviceRows = try rows("SELECT GUID, Name, LoginAddress, \(deviceColumn("AChanStartNo")), \(deviceColumn("DChanStartNo")), \(deviceColumn("AChanCount")), \(deviceColumn("DChanCount")) FROM HikDevice ORDER BY Name", columns: 7)
+        let channelRows = try rows("SELECT GUID, DeviceGUID, Name, ChannelNo FROM Channel WHERE ChannelType = 1 ORDER BY ChannelNo", columns: 4)
+        var layouts: [String: (analogStart: Int, digitalStart: Int, analogCount: Int, digitalCount: Int)] = [:]
+        for row in deviceRows {
+            layouts[row[0]] = (Int(row[3]) ?? 0, Int(row[4]) ?? 0, Int(row[5]) ?? 0, Int(row[6]) ?? 0)
+        }
         let entityPath = URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent("Entity").path
         var aliases: [String: String] = [:]
         if FileManager.default.fileExists(atPath: entityPath) {
@@ -81,7 +87,17 @@ public enum LegacyImporter {
         }
         let cameras = channelRows.compactMap { row -> Camera? in
             guard let number = Int(row[3]), number > 0 else { return nil }
-            return Camera(id: row[0], recorderID: row[1], name: aliases[row[0]] ?? row[2], channelNumber: number)
+            var recorderChannel = number
+            if let layout = layouts[row[1]] {
+                if layout.digitalStart > 0, layout.digitalCount > 0,
+                   (layout.digitalStart..<(layout.digitalStart + layout.digitalCount)).contains(number) {
+                    recorderChannel = layout.analogCount + number - layout.digitalStart + 1
+                } else if layout.analogStart > 0, layout.analogCount > 0,
+                          (layout.analogStart..<(layout.analogStart + layout.analogCount)).contains(number) {
+                    recorderChannel = number - layout.analogStart + 1
+                }
+            }
+            return Camera(id: row[0], recorderID: row[1], name: aliases[row[0]] ?? row[2], channelNumber: recorderChannel)
         }.sorted { left, right in
             let leftNamed = aliases[left.id] != nil
             let rightNamed = aliases[right.id] != nil
@@ -126,7 +142,17 @@ public enum CameraURLs {
 }
 
 public enum RecordingSearch {
-    public enum ParseError: Error { case invalidXML }
+    public enum ParseError: LocalizedError {
+        case invalidXML
+        case device(String)
+
+        public var errorDescription: String? {
+            switch self {
+            case .invalidXML: return "The recorder returned invalid XML."
+            case .device(let detail): return "Recorder search error: \(detail)"
+            }
+        }
+    }
 
     public static func request(channel: Int, start: Date, end: Date, position: Int = 0) -> Data {
         let formatter = ISO8601DateFormatter()
@@ -151,12 +177,21 @@ public enum RecordingSearch {
         let parser = XMLParser(data: data)
         parser.delegate = delegate
         guard parser.parse() else { throw ParseError.invalidXML }
+        if delegate.isResponseStatus { throw ParseError.device(delegate.responseDetail) }
         return delegate.recordings
     }
 }
 
 private final class SearchParser: NSObject, XMLParserDelegate {
     var recordings: [Recording] = []
+    var isResponseStatus = false
+    private var statusString = ""
+    private var subStatusCode = ""
+    var responseDetail: String {
+        if statusString.isEmpty { return subStatusCode.isEmpty ? "The recorder rejected the request." : subStatusCode }
+        if subStatusCode.isEmpty || subStatusCode == statusString { return statusString }
+        return "\(statusString) (\(subStatusCode))"
+    }
     private var insideMatch = false
     private var currentTag = ""
     private var text = ""
@@ -166,6 +201,7 @@ private final class SearchParser: NSObject, XMLParserDelegate {
 
     func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
         let tag = elementName.split(separator: ":").last.map(String.init) ?? elementName
+        if tag == "ResponseStatus" { isResponseStatus = true }
         if tag == "searchMatchItem" {
             insideMatch = true
             start = ""
@@ -180,6 +216,14 @@ private final class SearchParser: NSObject, XMLParserDelegate {
 
     func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
         let tag = elementName.split(separator: ":").last.map(String.init) ?? elementName
+        if isResponseStatus {
+            let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            switch tag {
+            case "statusString": statusString = String(value.prefix(120))
+            case "subStatusCode": subStatusCode = String(value.prefix(120))
+            default: break
+            }
+        }
         if insideMatch {
             let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
             switch tag {

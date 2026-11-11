@@ -54,6 +54,26 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(result.first?.cameras.first?.name, "Front Gate")
     }
 
+    func testImportMapsDigitalSDKChannelsToRecorderStreams() throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(path, &db), SQLITE_OK)
+        defer { sqlite3_close(db) }
+        let sql = """
+        CREATE TABLE HikDevice (GUID TEXT, Name TEXT, LoginAddress TEXT, AChanStartNo INTEGER, DChanStartNo INTEGER, AChanCount INTEGER, DChanCount INTEGER);
+        CREATE TABLE Channel (GUID TEXT, DeviceGUID TEXT, Name TEXT, ChannelType INTEGER, ChannelNo INTEGER);
+        INSERT INTO HikDevice VALUES ('r1','Recorder','192.0.2.1',1,33,0,32);
+        INSERT INTO Channel VALUES ('c1','r1','Driveway',1,33);
+        INSERT INTO Channel VALUES ('c2','r1','Garden',1,34);
+        INSERT INTO Channel VALUES ('c0','r1','Channel-zero1',2,1);
+        """
+        XCTAssertEqual(sqlite3_exec(db, sql, nil, nil, nil), SQLITE_OK)
+        let result = try LegacyImporter.load(from: path)
+        XCTAssertEqual(result.first?.cameras.map(\.name), ["Driveway", "Garden"])
+        XCTAssertEqual(result.first?.cameras.map(\.channelNumber), [1, 2])
+    }
+
     func testSearchRequestUsesHikvisionTrackAndUTC() throws {
         let start = Date(timeIntervalSince1970: 0)
         let end = Date(timeIntervalSince1970: 3600)
@@ -90,5 +110,20 @@ final class CoreTests: XCTestCase {
         let first = try XCTUnwrap(recordings.first)
         XCTAssertEqual(first.end.timeIntervalSince(first.start), 300)
         XCTAssertTrue(first.playbackURI.absoluteString.contains("endtime=20261110T100500Z"))
+    }
+
+    func testSearchParserReportsRecorderErrorInsteadOfEmptyResults() throws {
+        let xml = """
+        <ResponseStatus xmlns="http://www.isapi.org/ver20/XMLSchema">
+        <requestURL>/ISAPI/ContentMgmt/search</requestURL>
+        <statusCode>6</statusCode>
+        <statusString>Invalid XML Content</statusString>
+        <subStatusCode>badXmlContent</subStatusCode>
+        </ResponseStatus>
+        """
+        XCTAssertThrowsError(try RecordingSearch.parse(Data(xml.utf8))) { error in
+            XCTAssertTrue(error.localizedDescription.contains("Invalid XML Content"))
+            XCTAssertTrue(error.localizedDescription.contains("badXmlContent"))
+        }
     }
 }

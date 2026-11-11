@@ -8,7 +8,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
-        if b"<trackID>3301</trackID>" not in body:
+        if b"<trackID>101</trackID>" not in body:
             self.send_error(400)
             return
         auth = self.headers.get("Authorization", "")
@@ -27,7 +27,7 @@ class Handler(BaseHTTPRequestHandler):
         if values.get("username") != "viewer" or values.get("response") != expected:
             self.send_error(403)
             return
-        xml = b'''<CMSearchResult xmlns="http://www.isapi.org/ver20/XMLSchema"><matchList><searchMatchItem><timeSpan><startTime>2026-11-10T10:00:00Z</startTime><endTime>2026-11-10T10:05:00Z</endTime></timeSpan><playbackURI>rtsp://127.0.0.1/Streaming/tracks/3301?starttime=20261110T100000Z&amp;endtime=20261110T100500Z</playbackURI></searchMatchItem></matchList></CMSearchResult>'''
+        xml = b'''<CMSearchResult xmlns="http://www.isapi.org/ver20/XMLSchema"><matchList><searchMatchItem><timeSpan><startTime>2026-11-10T10:00:00Z</startTime><endTime>2026-11-10T10:05:00Z</endTime></timeSpan><playbackURI>rtsp://127.0.0.1/Streaming/tracks/101?starttime=20261110T100000Z&amp;endtime=20261110T100500Z</playbackURI></searchMatchItem></matchList></CMSearchResult>'''
         self.send_response(200)
         self.send_header("Content-Type", "application/xml")
         self.send_header("Content-Length", str(len(xml)))

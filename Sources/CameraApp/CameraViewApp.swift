@@ -1,6 +1,6 @@
 import SwiftUI
 
-@main struct CameraViewApp: App {
+@main struct HikvisionViewerApp: App {
     var body: some Scene {
         WindowGroup("Hikvision Viewer") {
             ContentView()

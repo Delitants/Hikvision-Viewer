@@ -35,17 +35,11 @@ enum ViewMode: String, CaseIterable, Identifiable {
             if FileManager.default.fileExists(atPath: Self.settingsURL.path) {
                 recorders = try JSONDecoder().decode([Recorder].self, from: Data(contentsOf: Self.settingsURL))
                 if let imported = try? LegacyImporter.load(from: legacy) {
-                    let importedCameras = imported.flatMap(\.cameras)
-                    let names = Dictionary(uniqueKeysWithValues: importedCameras.map { ($0.id, $0.name) })
-                    let order = Dictionary(uniqueKeysWithValues: importedCameras.enumerated().map { ($0.element.id, $0.offset) })
+                    let importedCameras = Dictionary(uniqueKeysWithValues: imported.map { ($0.id, $0.cameras) })
                     recorders = recorders.map { recorder in
-                        let cameras = recorder.cameras.map { camera in
-                            Camera(id: camera.id, recorderID: camera.recorderID,
-                                   name: names[camera.id] ?? camera.name, channelNumber: camera.channelNumber)
-                        }.sorted { (order[$0.id] ?? Int.max) < (order[$1.id] ?? Int.max) }
                         return Recorder(id: recorder.id, name: recorder.name, host: recorder.host, username: recorder.username,
                                         httpPort: recorder.httpPort, rtspPort: recorder.rtspPort, useHTTPS: recorder.useHTTPS,
-                                        cameras: cameras)
+                                        cameras: importedCameras[recorder.id] ?? recorder.cameras)
                     }
                     try persist()
                 }

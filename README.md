@@ -10,6 +10,8 @@ An independent, native Apple Silicon Mac app for viewing Hikvision recorder came
 2. Download the Mac app from [Releases](https://github.com/Delitants/Hikvision-Viewer/releases), unzip it, and move **Hikvision Viewer.app** to Applications.
 3. Open the app. It imports recorder addresses, channels, and saved camera names from an existing iVMS-4200 installation when available. Enter each recorder's username and password when prompted. Passwords are stored in macOS Keychain.
 
+This preview may ask for recorder passwords again after an update.
+
 This preview is not Apple notarized. If macOS blocks its first launch, follow [Apple's Open Anyway instructions](https://support.apple.com/en-us/102445) after checking that you downloaded it from this repository.
 
 Choose a camera for live view. **Four cameras** uses substreams to reduce bandwidth. For playback, choose a camera, open **Recordings**, select a date, and click **Search**. You can also open a local video file.

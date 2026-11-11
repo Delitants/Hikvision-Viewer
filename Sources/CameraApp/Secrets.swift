@@ -3,7 +3,12 @@ import LocalAuthentication
 import Security
 
 enum SecretStore {
-    private static let service = "com.neolo.CameraView.recorder.v2"
+    // Ad hoc signatures change between releases, so a previous build's legacy
+    // Keychain item can block while macOS requests access to it.
+    private static var service: String {
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "dev"
+        return "com.neolo.HikvisionViewer.recorder.\(build)"
+    }
 
     static func password(for recorderID: String) -> String? {
         let authentication = LAContext()

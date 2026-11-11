@@ -4,6 +4,7 @@ set -euo pipefail
 project_dir="${0:A:h}"
 vlc_root="/Applications/VLC.app/Contents/MacOS"
 app_dir="$project_dir/build/Hikvision Viewer.app"
+rm -rf "$app_dir"
 mkdir -p "$project_dir/.cache/clang" "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 cp "$project_dir/Info.plist" "$app_dir/Contents/Info.plist"
 cp "$project_dir/Assets/AppIcon.icns" "$app_dir/Contents/Resources/AppIcon.icns"
@@ -16,8 +17,8 @@ CLANG_MODULE_CACHE_PATH="$project_dir/.cache/clang" xcrun swiftc \
   -Xlinker -rpath -Xlinker "$vlc_root/lib" \
   -lsqlite3 -lvlc \
   "$project_dir/Sources/CameraCore/Core.swift" "$project_dir"/Sources/CameraApp/*.swift \
-  -o "$app_dir/Contents/MacOS/CameraView"
+  -o "$app_dir/Contents/MacOS/HikvisionViewer"
 
 codesign --force --sign - --timestamp=none "$app_dir"
-file "$app_dir/Contents/MacOS/CameraView"
+file "$app_dir/Contents/MacOS/HikvisionViewer"
 codesign --verify --strict "$app_dir"

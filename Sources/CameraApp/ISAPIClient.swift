@@ -73,7 +73,13 @@ enum ISAPIClient {
             }
             guard let http = response as? HTTPURLResponse else { throw ISAPIError.invalidAddress }
             if http.statusCode == 401 { throw ISAPIError.unauthorized }
-            guard http.statusCode == 200 else { throw ISAPIError.http(http.statusCode) }
+            guard http.statusCode == 200 else {
+                do { _ = try RecordingSearch.parse(data) }
+                catch let error as RecordingSearch.ParseError {
+                    if case .device = error { throw error }
+                } catch {}
+                throw ISAPIError.http(http.statusCode)
+            }
             let batch = try RecordingSearch.parse(data)
             all.append(contentsOf: batch)
             if batch.count < 100 { break }

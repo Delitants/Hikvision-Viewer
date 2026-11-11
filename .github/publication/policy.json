@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "repository": "Delitants/Hikvision-Viewer",
+  "baseline": "065b0e4b005f40a9b1a2c1b8ae6cee1a5e4f25a2",
+  "public_docs": [],
+  "public_data": [],
+  "release_assets": [
+    "Hikvision-Viewer-*-macos-arm64.zip",
+    "Hikvision-Viewer-*-SHA256SUMS.txt"
+  ]
+}

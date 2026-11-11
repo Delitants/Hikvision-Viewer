@@ -30,9 +30,11 @@ final class CoreTests: XCTestCase {
         let url = try XCTUnwrap(CameraURLs.live(host: "192.0.2.1", port: 554, channel: 33, quality: .sub, username: "u:ser", password: "p@ss?"))
         XCTAssertEqual(url.path, "/Streaming/Channels/3302")
         XCTAssertEqual(url.port, 554)
-        XCTAssertEqual(url.user, "u:ser")
+        XCTAssertEqual(url.user?.removingPercentEncoding, "u:ser")
         XCTAssertEqual(url.password?.removingPercentEncoding, "p@ss?")
-        XCTAssertTrue(url.absoluteString.contains("p%40ss%3F"))
+        let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        XCTAssertEqual(components.percentEncodedUser, "u%3Aser")
+        XCTAssertEqual(components.percentEncodedPassword, "p%40ss%3F")
     }
 
     func testImportUsesAssignedCameraNamesFromEntityDatabase() throws {
@@ -68,10 +70,12 @@ final class CoreTests: XCTestCase {
         let foreign = URL(string: "rtsp://other.example/Streaming/tracks/3301")!
         XCTAssertNil(CameraURLs.authenticated(foreign, expectedHost: "192.0.2.1", username: "operator", password: "secret", port: 554))
         let local = URL(string: "rtsp://192.0.2.1/Streaming/tracks/3301?starttime=20261110T100000Z")!
-        let authenticated = try XCTUnwrap(CameraURLs.authenticated(local, expectedHost: "192.0.2.1", username: "operator", password: "secret", port: 554))
+        let authenticated = try XCTUnwrap(CameraURLs.authenticated(local, expectedHost: "192.0.2.1", username: "u:ser", password: "p@ss?", port: 554))
         XCTAssertEqual(authenticated.host, "192.0.2.1")
-        XCTAssertEqual(authenticated.password, "secret")
         XCTAssertEqual(authenticated.port, 554)
+        let components = try XCTUnwrap(URLComponents(url: authenticated, resolvingAgainstBaseURL: false))
+        XCTAssertEqual(components.percentEncodedUser, "u%3Aser")
+        XCTAssertEqual(components.percentEncodedPassword, "p%40ss%3F")
     }
 
     func testSearchParserReadsNamespacedRecording() throws {

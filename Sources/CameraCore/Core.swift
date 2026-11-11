@@ -97,6 +97,13 @@ public enum LegacyImporter {
 }
 
 public enum CameraURLs {
+    private static let credentialCharacters = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+
+    private static func setCredentials(_ components: inout URLComponents, username: String, password: String) {
+        components.percentEncodedUser = username.addingPercentEncoding(withAllowedCharacters: credentialCharacters)
+        components.percentEncodedPassword = password.addingPercentEncoding(withAllowedCharacters: credentialCharacters)
+    }
+
     public static func live(host: String, port: Int, channel: Int, quality: StreamQuality, username: String, password: String) -> URL? {
         guard channel > 0, channel < 1_000, (1...65535).contains(port), !host.isEmpty else { return nil }
         var components = URLComponents()
@@ -104,8 +111,7 @@ public enum CameraURLs {
         components.host = host
         components.port = port
         components.path = "/Streaming/Channels/\(channel * 100 + quality.rawValue)"
-        components.user = username
-        components.password = password
+        setCredentials(&components, username: username, password: password)
         return components.url
     }
 
@@ -114,8 +120,7 @@ public enum CameraURLs {
               components.scheme?.lowercased() == "rtsp",
               components.host?.lowercased() == expectedHost.lowercased() else { return nil }
         components.port = port
-        components.user = username
-        components.password = password
+        setCredentials(&components, username: username, password: password)
         return components.url
     }
 }

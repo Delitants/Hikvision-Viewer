@@ -65,7 +65,13 @@ struct DeviceEditorSheet: View {
                         HStack {
                             TextField("Camera name", text: $camera.name)
                             TextField("Channel", text: $camera.number).frame(width: 75)
-                            Button { cameras.removeAll { $0.id == camera.id } } label: { Image(systemName: "minus.circle") }
+                            Button { cameras.removeAll { $0.id == camera.id } } label: {
+                                Image(systemName: "minus.circle")
+                                    .font(.title3)
+                                    .frame(width: 44, height: 36)
+                            }
+                            .buttonStyle(.bordered)
+                            .accessibilityLabel("Remove \(camera.name)")
                         }
                     }
                 }

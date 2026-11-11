@@ -4,7 +4,6 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var state = AppState()
     @State private var credentialRecorder: Recorder?
-    @State private var settingsRecorder: Recorder?
     @State private var editingDevice: Recorder?
     @State private var pendingRemoval: Recorder?
     @State private var showingCalendar = false
@@ -45,13 +44,10 @@ struct ContentView: View {
                         state.status = error.localizedDescription
                     }
                 }
-            } onCancel: { credentialRecorder = nil }
-        }
-        .sheet(item: $settingsRecorder) { recorder in
-            RecorderSettingsSheet(recorder: recorder) { updated in
-                state.updateRecorder(updated)
-                settingsRecorder = nil
-            } onCancel: { settingsRecorder = nil }
+            } onCancel: {
+                credentialRecorder = nil
+                state.status = "Connection cancelled."
+            }
         }
         .sheet(item: $editingDevice) { recorder in
             DeviceEditorSheet(recorder: recorder) { updated in
@@ -111,9 +107,14 @@ struct ContentView: View {
                             Text(recorder.name.isEmpty ? "Recorder" : recorder.name)
                                 .lineLimit(1)
                             Spacer()
-                            Button { settingsRecorder = recorder } label: { Image(systemName: "gearshape") }
-                                .buttonStyle(.borderless)
-                                .help("Recorder settings")
+                            Button { editingDevice = recorder } label: {
+                                Label("Settings", systemImage: "gearshape")
+                                    .font(.caption.weight(.semibold))
+                                    .frame(minWidth: 90, minHeight: 40)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.bordered)
+                            .accessibilityLabel("Settings for \(recorder.name)")
                         }
                     }
                 }
@@ -138,9 +139,11 @@ struct ContentView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 350)
+            .frame(width: 320)
             if let camera = state.selectedCamera, let recorder = state.recorder(for: camera) {
-                Button { credentialRecorder = recorder } label: { Image(systemName: "key") }
+                Button("Credentials", systemImage: "key") { credentialRecorder = recorder }
+                    .buttonStyle(.bordered)
+                    .frame(minHeight: 40)
                     .help("Recorder credentials")
             }
         }
@@ -304,7 +307,12 @@ struct ContentView: View {
                             }
                         }
                         Button("Edit") { editingDevice = recorder }
-                        Button(role: .destructive) { pendingRemoval = recorder } label: { Image(systemName: "trash") }
+                        Button(role: .destructive) { pendingRemoval = recorder } label: {
+                            Label("Remove", systemImage: "trash")
+                        }
+                        .buttonStyle(.bordered)
+                        .frame(minHeight: 40)
+                        .accessibilityLabel("Remove \(recorder.name)")
                     }
                     .padding(.vertical, 4)
                 }
@@ -323,7 +331,6 @@ struct ContentView: View {
         if panel.runModal() == .OK, let url = panel.url { state.openLocalVideo(url) }
     }
 }
-
 private struct CredentialsSheet: View {
     let recorder: Recorder
     let onSave: (String, String) -> Void
@@ -357,56 +364,5 @@ private struct CredentialsSheet: View {
         }
         .padding(24)
         .frame(width: 440)
-    }
-}
-
-private struct RecorderSettingsSheet: View {
-    let recorder: Recorder
-    let onSave: (Recorder) -> Void
-    let onCancel: () -> Void
-    @State private var name: String
-    @State private var host: String
-    @State private var username: String
-    @State private var httpPort: String
-    @State private var rtspPort: String
-    @State private var useHTTPS: Bool
-
-    init(recorder: Recorder, onSave: @escaping (Recorder) -> Void, onCancel: @escaping () -> Void) {
-        self.recorder = recorder
-        self.onSave = onSave
-        self.onCancel = onCancel
-        _name = State(initialValue: recorder.name)
-        _host = State(initialValue: recorder.host)
-        _username = State(initialValue: recorder.username)
-        _httpPort = State(initialValue: String(recorder.httpPort))
-        _rtspPort = State(initialValue: String(recorder.rtspPort))
-        _useHTTPS = State(initialValue: recorder.useHTTPS)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Recorder Settings").font(.title2.weight(.semibold))
-            Form {
-                TextField("Name", text: $name)
-                TextField("Address", text: $host)
-                TextField("Username", text: $username)
-                Toggle("Use HTTPS for recording search", isOn: $useHTTPS)
-                TextField("HTTP(S) port", text: $httpPort)
-                TextField("RTSP port", text: $rtspPort)
-            }
-            HStack {
-                Spacer()
-                Button("Cancel", action: onCancel)
-                Button("Save") {
-                    guard let http = Int(httpPort), let rtsp = Int(rtspPort) else { return }
-                    onSave(Recorder(id: recorder.id, name: name, host: host, username: username,
-                                    httpPort: http, rtspPort: rtsp, useHTTPS: useHTTPS, cameras: recorder.cameras))
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(host.isEmpty || !(1...65535).contains(Int(httpPort) ?? 0) || !(1...65535).contains(Int(rtspPort) ?? 0))
-            }
-        }
-        .padding(24)
-        .frame(width: 480)
     }
 }

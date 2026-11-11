@@ -37,6 +37,20 @@ private enum VLCReaper {
 @MainActor final class VLCPlayer: ObservableObject {
     private var player: OpaquePointer?
     private weak var view: NSView?
+    private var monitor: Timer?
+    private var recordingURL: URL?
+    private var elapsedOffset: TimeInterval = 0
+    private var lastTime: Int64 = -1
+    private var lastPictures: Int32 = -1
+    private var hasProgress = false
+    private var lastProgress = Date()
+    private var segmentStarted = Date()
+    private var lastRetry = Date.distantPast
+    private var retries = 0
+    private var recovering = false
+    var onRecovery: ((Int) -> Void)?
+    var onResumed: (() -> Void)?
+    var onPlaybackTime: ((TimeInterval) -> Void)?
 
     init() {}
 
@@ -54,7 +68,29 @@ private enum VLCReaper {
         self.view = nil
     }
 
-    @discardableResult func play(_ url: URL) -> Bool {
+    @discardableResult func play(_ url: URL, recoverRecording: Bool = false) -> Bool {
+        monitor?.invalidate()
+        monitor = nil
+        recordingURL = recoverRecording ? url : nil
+        elapsedOffset = 0
+        lastTime = -1
+        lastPictures = -1
+        hasProgress = false
+        lastProgress = Date()
+        segmentStarted = Date()
+        lastRetry = .distantPast
+        retries = 0
+        recovering = false
+        let started = start(url)
+        if started && recoverRecording {
+            monitor = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.checkPlayback() }
+            }
+        }
+        return started
+    }
+
+    private func start(_ url: URL) -> Bool {
         guard let instance = VLCEnvironment.shared.instance,
               let next = libvlc_media_player_new(instance) else { return false }
         guard let media = libvlc_media_new_location(instance, url.absoluteString) else {
@@ -62,7 +98,7 @@ private enum VLCReaper {
             return false
         }
         libvlc_media_add_option(media, ":rtsp-tcp")
-        libvlc_media_add_option(media, ":network-caching=300")
+        libvlc_media_add_option(media, ":network-caching=1200")
         if let view { libvlc_media_player_set_nsobject(next, Unmanaged.passUnretained(view).toOpaque()) }
         libvlc_media_player_set_media(next, media)
         libvlc_media_release(media)
@@ -72,7 +108,61 @@ private enum VLCReaper {
         return libvlc_media_player_play(next) == 0
     }
 
+    private func checkPlayback() {
+        guard let player, let original = recordingURL else { return }
+        let now = Date()
+        let currentTime = libvlc_media_player_get_time(player)
+        var stats = libvlc_media_stats_t()
+        let media = libvlc_media_player_get_media(player)
+        let hasStats = media.map { libvlc_media_get_stats($0, &stats) != 0 } ?? false
+        if let media { libvlc_media_release(media) }
+        let pictures = hasStats ? stats.i_displayed_pictures : -1
+        let advanced = pictures > 0 ? pictures > lastPictures : currentTime > 0 && currentTime > lastTime
+        if advanced {
+            if !hasProgress { segmentStarted = now }
+            lastProgress = now
+            hasProgress = true
+            retries = 0
+            if recovering {
+                recovering = false
+                onResumed?()
+            }
+        }
+        if currentTime >= 0 { lastTime = currentTime }
+        if pictures >= 0 { lastPictures = pictures }
+        let state = libvlc_media_player_get_state(player)
+        let stale = now.timeIntervalSince(lastProgress) > (hasProgress ? 8 : 20)
+        let segmentElapsed = lastTime > 0 ? Double(lastTime) / 1000 : (hasProgress ? now.timeIntervalSince(segmentStarted) : 0)
+        if advanced { onPlaybackTime?(elapsedOffset + segmentElapsed) }
+        guard state != libvlc_Ended || RecordingPlayback.resume(original, elapsedSeconds: max(1, elapsedOffset + segmentElapsed)) != nil else {
+            monitor?.invalidate(); monitor = nil
+            return
+        }
+        guard stale || state == libvlc_Error || state == libvlc_Stopped || state == libvlc_Ended else { return }
+        let delay = min(30.0, pow(2.0, Double(min(retries, 5))))
+        guard now.timeIntervalSince(lastRetry) >= delay else { return }
+        elapsedOffset += segmentElapsed
+        let nextURL = RecordingPlayback.resume(original, elapsedSeconds: elapsedOffset) ?? original
+        retries += 1
+        lastRetry = now
+        lastProgress = now
+        segmentStarted = now
+        lastTime = -1
+        lastPictures = -1
+        hasProgress = false
+        recovering = true
+        onRecovery?(retries)
+        _ = start(nextURL)
+    }
+
     func stop() {
+        monitor?.invalidate()
+        monitor = nil
+        recordingURL = nil
+        onRecovery = nil
+        onResumed = nil
+        onPlaybackTime = nil
+        recovering = false
         if let player {
             self.player = nil
             VLCReaper.retire(player)

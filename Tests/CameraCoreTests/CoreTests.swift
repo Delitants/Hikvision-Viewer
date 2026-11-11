@@ -4,6 +4,65 @@ import XCTest
 @testable import CameraCore
 
 final class CoreTests: XCTestCase {
+    func testRecordingWindowAcceptsSevenCalendarDaysAcrossDST() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Europe/Madrid"))
+        let start = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 3, day: 27, hour: 12)))
+        let end = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 4, day: 2, hour: 9)))
+        let days = try XCTUnwrap(RecordingWindow.days(start: start, end: end, calendar: calendar))
+        XCTAssertEqual(days.count, 7)
+        XCTAssertEqual(calendar.component(.day, from: days[2]), 29)
+        XCTAssertEqual(calendar.component(.day, from: days[6]), 2)
+    }
+
+    func testRecordingWindowRejectsEighthDayAndReverseRange() throws {
+        let calendar = Calendar(identifier: .gregorian)
+        let start = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 1, day: 1)))
+        let eighth = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 1, day: 8)))
+        XCTAssertNil(RecordingWindow.days(start: start, end: eighth, calendar: calendar))
+        XCTAssertNil(RecordingWindow.days(start: eighth, end: start, calendar: calendar))
+        XCTAssertEqual(RecordingWindow.days(start: start, end: start, calendar: calendar)?.count, 1)
+    }
+
+    func testTimelineSeeksInsideFootageOrToNextSegment() throws {
+        let base = Date(timeIntervalSince1970: 1_000_000)
+        let url = try XCTUnwrap(URL(string: "rtsp://192.0.2.1/Streaming/tracks/101"))
+        let first = Recording(start: base, end: base.addingTimeInterval(60), playbackURI: url)
+        let second = Recording(start: base.addingTimeInterval(120), end: base.addingTimeInterval(180), playbackURI: url)
+        let recordings = [first, second]
+        XCTAssertEqual(RecordingTimeline.seekTarget(for: base.addingTimeInterval(20), recordings: recordings)?.time,
+                       base.addingTimeInterval(20))
+        XCTAssertEqual(RecordingTimeline.seekTarget(for: base.addingTimeInterval(90), recordings: recordings)?.time,
+                       second.start)
+        XCTAssertEqual(RecordingTimeline.seekTarget(for: base.addingTimeInterval(-20), recordings: recordings)?.time,
+                       first.start)
+    }
+
+    func testTimelineClampsAfterLastSegmentToPlayableTime() throws {
+        let base = Date(timeIntervalSince1970: 1_000_000)
+        let url = try XCTUnwrap(URL(string: "rtsp://192.0.2.1/Streaming/tracks/101"))
+        let recording = Recording(start: base, end: base.addingTimeInterval(60), playbackURI: url)
+        let target = try XCTUnwrap(RecordingTimeline.seekTarget(for: base.addingTimeInterval(200), recordings: [recording]))
+        XCTAssertEqual(target.recording, recording)
+        XCTAssertEqual(target.time, base.addingTimeInterval(57))
+        XCTAssertNil(RecordingTimeline.seekTarget(for: base, recordings: []))
+    }
+
+    func testResumeRecordingKeepsEndAndAdvancesStart() throws {
+        let original = try XCTUnwrap(URL(string: "rtsp://192.0.2.1/Streaming/tracks/101?starttime=20261110T100000Z&endtime=20261110T110000Z"))
+        let resumed = try XCTUnwrap(RecordingPlayback.resume(original, elapsedSeconds: 75))
+        XCTAssertTrue(resumed.absoluteString.contains("starttime=20261110T100115Z"))
+        XCTAssertTrue(resumed.absoluteString.contains("endtime=20261110T110000Z"))
+    }
+
+    func testStreamingChannelParserUsesMainStreamsAndNames() throws {
+        let xml = """
+        <StreamingChannelList><StreamingChannel><id>101</id><channelName>Front</channelName></StreamingChannel><StreamingChannel><id>102</id><channelName>Front sub</channelName></StreamingChannel><StreamingChannel><id>201</id><channelName>Back</channelName></StreamingChannel></StreamingChannelList>
+        """
+        let channels = try StreamingChannels.parse(Data(xml.utf8))
+        XCTAssertEqual(channels.map(\.number), [1, 2])
+        XCTAssertEqual(channels.map(\.name), ["Front", "Back"])
+    }
     func testImportsSavedRecordersAndChannelsWithoutPasswords() throws {
         let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
         defer { try? FileManager.default.removeItem(atPath: path) }

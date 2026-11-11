@@ -14,7 +14,9 @@ This preview may ask for recorder passwords again after an update.
 
 This preview is not Apple notarized. If macOS blocks its first launch, follow [Apple's Open Anyway instructions](https://support.apple.com/en-us/102445) after checking that you downloaded it from this repository.
 
-Choose a camera for live view. **Four cameras** uses substreams to reduce bandwidth. For playback, choose a camera, open **Recordings**, select a date, and click **Search**. You can also open a local video file.
+Choose a camera for live view. **Four cameras** uses substreams to reduce bandwidth. For playback, choose a camera, open **Recordings**, select one day or a range of up to seven days in the calendar, and click **Search**. The timeline shows available footage; drag its slider to play from a time. You can also open a local video file.
+
+Use **Devices** to add an NVR or individual camera by address, edit its channels, or search the LAN for ONVIF devices. After connecting, **Camera Names** reads channel names from a compatible device. Playback automatically attempts to reconnect and resume after an interrupted stream.
 
 The app uses RTSP for video and Hikvision ISAPI for recording search. It does not include Hik-Connect cloud access or the other iVMS modules. It leaves iVMS-4200 unchanged.
 

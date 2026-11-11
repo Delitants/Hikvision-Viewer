@@ -40,6 +40,25 @@ private final class RecorderAuth: NSObject, URLSessionTaskDelegate {
 }
 
 enum ISAPIClient {
+    static func channels(recorder: Recorder, password: String) async throws -> [DetectedChannel] {
+        var parts = URLComponents()
+        parts.scheme = recorder.useHTTPS ? "https" : "http"
+        parts.host = recorder.host
+        parts.port = recorder.httpPort
+        parts.path = "/ISAPI/Streaming/channels"
+        guard let url = parts.url else { throw ISAPIError.invalidAddress }
+        let auth = RecorderAuth(username: recorder.username, password: password)
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 12
+        let session = URLSession(configuration: config, delegate: auth, delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        let (data, response) = try await session.data(from: url)
+        guard let http = response as? HTTPURLResponse else { throw ISAPIError.invalidAddress }
+        if http.statusCode == 401 { throw ISAPIError.unauthorized }
+        guard http.statusCode == 200 else { throw ISAPIError.http(http.statusCode) }
+        return try StreamingChannels.parse(data)
+    }
+
     static func search(recorder: Recorder, camera: Camera, password: String, on day: Date) async throws -> [Recording] {
         guard !recorder.host.isEmpty, (1...65535).contains(recorder.httpPort) else { throw ISAPIError.invalidAddress }
         var components = URLComponents()

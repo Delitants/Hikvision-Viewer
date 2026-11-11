@@ -4,6 +4,7 @@ import SwiftUI
 enum ViewMode: String, CaseIterable, Identifiable {
     case live = "Live View"
     case recordings = "Recordings"
+    case devices = "Devices"
     var id: String { rawValue }
 }
 
@@ -15,8 +16,12 @@ enum ViewMode: String, CaseIterable, Identifiable {
     @Published var selectedTile = 0
     @Published var slots: [Camera?] = Array(repeating: nil, count: 4)
     @Published var recordings: [Recording] = []
-    @Published var searchDate = Date()
+    @Published var startDate = Calendar.current.startOfDay(for: Date())
+    @Published var endDate = Calendar.current.startOfDay(for: Date())
+    @Published var selectedTime = Date()
     @Published var isSearching = false
+    @Published var isDiscovering = false
+    @Published var discoveredHosts: [String] = []
     @Published var status = "Select a camera to begin."
 
     let players: [VLCPlayer] = (0..<4).map { _ in VLCPlayer() }
@@ -34,7 +39,8 @@ enum ViewMode: String, CaseIterable, Identifiable {
             let legacy = "/Applications/iVMS-4200.app/Contents/MacOS/Device"
             if FileManager.default.fileExists(atPath: Self.settingsURL.path) {
                 recorders = try JSONDecoder().decode([Recorder].self, from: Data(contentsOf: Self.settingsURL))
-                if let imported = try? LegacyImporter.load(from: legacy) {
+                if !UserDefaults.standard.bool(forKey: "importedDigitalChannelMappingV1"),
+                   let imported = try? LegacyImporter.load(from: legacy) {
                     let importedCameras = Dictionary(uniqueKeysWithValues: imported.map { ($0.id, $0.cameras) })
                     recorders = recorders.map { recorder in
                         return Recorder(id: recorder.id, name: recorder.name, host: recorder.host, username: recorder.username,
@@ -42,10 +48,12 @@ enum ViewMode: String, CaseIterable, Identifiable {
                                         cameras: importedCameras[recorder.id] ?? recorder.cameras)
                     }
                     try persist()
+                    UserDefaults.standard.set(true, forKey: "importedDigitalChannelMappingV1")
                 }
             } else {
                 recorders = try LegacyImporter.load(from: legacy)
                 try persist()
+                UserDefaults.standard.set(true, forKey: "importedDigitalChannelMappingV1")
             }
             if recorders.isEmpty { status = "No cameras found in iVMS-4200." }
             else { selectedCamera = recorders.first?.cameras.first }
@@ -81,6 +89,54 @@ enum ViewMode: String, CaseIterable, Identifiable {
 
     func updateRecorder(_ recorder: Recorder) { replace(recorder) }
 
+    func addDevice(_ recorder: Recorder) {
+        guard !recorders.contains(where: { $0.host == recorder.host && $0.httpPort == recorder.httpPort }) else {
+            status = "That device is already configured."
+            return
+        }
+        recorders.append(recorder)
+        try? persist()
+        status = "Added \(recorder.name). Enter its credentials to retrieve camera names."
+    }
+
+    func removeDevice(_ id: String) {
+        guard let index = recorders.firstIndex(where: { $0.id == id }) else { return }
+        let device = recorders.remove(at: index)
+        if selectedCamera?.recorderID == id { selectedCamera = nil; stopAll() }
+        passwords[id] = nil
+        try? persist()
+        status = "Removed \(device.name)."
+    }
+
+    func refreshChannels(for recorder: Recorder) async {
+        guard let current = recorders.first(where: { $0.id == recorder.id }),
+              let password = passwords[recorder.id] else { return }
+        do {
+            let channels = try await ISAPIClient.channels(recorder: current, password: password)
+            guard !channels.isEmpty else { status = "No camera channels were reported by this device."; return }
+            let cameras = channels.map { channel in
+                Camera(id: "manual-\(recorder.id)-\(channel.number)", recorderID: recorder.id,
+                       name: channel.name, channelNumber: channel.number)
+            }
+            replace(Recorder(id: current.id, name: current.name, host: current.host, username: current.username,
+                             httpPort: current.httpPort, rtspPort: current.rtspPort, useHTTPS: current.useHTTPS,
+                             cameras: cameras))
+            if selectedCamera?.recorderID == current.id {
+                let selectedNumber = selectedCamera?.channelNumber
+                selectedCamera = cameras.first(where: { $0.channelNumber == selectedNumber }) ?? cameras.first
+            }
+            status = "Retrieved \(cameras.count) camera names from \(current.name)."
+        } catch { status = "Could not retrieve camera names: \(error.localizedDescription)" }
+    }
+
+    func discover() async {
+        isDiscovering = true
+        status = "Searching the LAN for ONVIF devices…"
+        discoveredHosts = await LANDiscovery.search()
+        isDiscovering = false
+        status = discoveredHosts.isEmpty ? "No ONVIF devices found. You can add an address manually." : "Found \(discoveredHosts.count) devices."
+    }
+
     private func replace(_ recorder: Recorder) {
         guard let index = recorders.firstIndex(where: { $0.id == recorder.id }) else { return }
         recorders[index] = recorder
@@ -98,8 +154,8 @@ enum ViewMode: String, CaseIterable, Identifiable {
 
     func setMode(_ mode: ViewMode) {
         self.mode = mode
-        if mode == .recordings { stopLive() }
-        else { playbackPlayer.stop() }
+        if mode != .live { stopLive() }
+        if mode != .recordings { playbackPlayer.stop() }
     }
 
     func setGrid(_ count: Int) {
@@ -145,6 +201,29 @@ enum ViewMode: String, CaseIterable, Identifiable {
         playbackPlayer.stop()
     }
 
+    var timelineEnd: Date {
+        Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: endDate)) ?? endDate
+    }
+
+    func setStartDate(_ date: Date) {
+        let calendar = Calendar.current
+        startDate = calendar.startOfDay(for: date)
+        let latest = calendar.date(byAdding: .day, value: 6, to: startDate) ?? startDate
+        endDate = min(max(endDate, startDate), latest)
+        selectedTime = startDate
+        recordings = []
+        playbackPlayer.stop()
+    }
+
+    func setEndDate(_ date: Date) {
+        let calendar = Calendar.current
+        let latest = calendar.date(byAdding: .day, value: 6, to: startDate) ?? startDate
+        endDate = min(max(calendar.startOfDay(for: date), startDate), latest)
+        selectedTime = startDate
+        recordings = []
+        playbackPlayer.stop()
+    }
+
     func search() async {
         guard let camera = selectedCamera, let recorder = recorder(for: camera),
               let password = passwords[recorder.id] else {
@@ -156,23 +235,52 @@ enum ViewMode: String, CaseIterable, Identifiable {
         status = "Searching recordings…"
         defer { isSearching = false }
         do {
-            let found = try await ISAPIClient.search(recorder: recorder, camera: camera, password: password, on: searchDate)
-            recordings = found
-            status = found.isEmpty ? "No recordings found for this date." : "Found \(found.count) recordings."
+            guard let days = RecordingWindow.days(start: startDate, end: endDate) else {
+                status = "Choose no more than seven calendar days."
+                return
+            }
+            var found: [Recording] = []
+            for (index, day) in days.enumerated() {
+                status = "Searching day \(index + 1) of \(days.count)…"
+                found += try await ISAPIClient.search(recorder: recorder, camera: camera, password: password, on: day)
+            }
+            recordings = Array(Set(found)).sorted { $0.start < $1.start }
+            selectedTime = recordings.first?.start ?? startDate
+            status = recordings.isEmpty ? "No recordings found for this range." : "Found \(recordings.count) recording segments."
         } catch {
             status = error.localizedDescription
         }
     }
 
-    func play(_ recording: Recording) {
+    func play(at time: Date) {
+        guard let target = RecordingTimeline.seekTarget(for: time, recordings: recordings) else {
+            status = "Search for recordings first."
+            return
+        }
+        selectedTime = target.time
+        let offset = target.time.timeIntervalSince(target.recording.start)
+        let playbackURI = offset > 0 ? RecordingPlayback.resume(target.recording.playbackURI, elapsedSeconds: offset) : target.recording.playbackURI
+        guard let playbackURI else {
+            status = "This recorder cannot seek within that segment."
+            return
+        }
         guard let camera = selectedCamera, let recorder = recorder(for: camera),
               let password = passwords[recorder.id],
-              let url = CameraURLs.authenticated(recording.playbackURI, expectedHost: recorder.host,
+              let url = CameraURLs.authenticated(playbackURI, expectedHost: recorder.host,
                                                   username: recorder.username, password: password, port: recorder.rtspPort) else {
             status = "The recorder returned a playback address for a different host."
             return
         }
-        status = playbackPlayer.play(url) ? "Playing recording…" : "Could not start playback."
+        playbackPlayer.onPlaybackTime = { [weak self] seconds in
+            self?.selectedTime = min(target.time.addingTimeInterval(seconds), target.recording.end)
+        }
+        playbackPlayer.onRecovery = { [weak self] attempt in
+            self?.status = "Connection interrupted. Resuming recording (attempt \(attempt))…"
+        }
+        playbackPlayer.onResumed = { [weak self] in
+            self?.status = "Playback resumed."
+        }
+        status = playbackPlayer.play(url, recoverRecording: true) ? "Playing recording…" : "Could not start playback."
     }
 
     func openLocalVideo(_ url: URL) {

@@ -5,6 +5,9 @@ struct ContentView: View {
     @StateObject private var state = AppState()
     @State private var credentialRecorder: Recorder?
     @State private var settingsRecorder: Recorder?
+    @State private var editingDevice: Recorder?
+    @State private var pendingRemoval: Recorder?
+    @State private var showingCalendar = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -15,7 +18,8 @@ struct ContentView: View {
                 header
                 Divider()
                 if state.mode == .live { liveView }
-                else { recordingsView }
+                else if state.mode == .recordings { recordingsView }
+                else { devicesView }
                 Divider()
                 HStack {
                     Image(systemName: "info.circle")
@@ -36,6 +40,7 @@ struct ContentView: View {
                         credentialRecorder = nil
                         if state.mode == .live, let camera = state.selectedCamera { state.show(camera) }
                         else if state.mode == .recordings { await state.search() }
+                        else { await state.refreshChannels(for: recorder) }
                     } catch {
                         state.status = error.localizedDescription
                     }
@@ -47,6 +52,19 @@ struct ContentView: View {
                 state.updateRecorder(updated)
                 settingsRecorder = nil
             } onCancel: { settingsRecorder = nil }
+        }
+        .sheet(item: $editingDevice) { recorder in
+            DeviceEditorSheet(recorder: recorder) { updated in
+                if state.recorders.contains(where: { $0.id == updated.id }) { state.updateRecorder(updated) }
+                else { state.addDevice(updated) }
+                editingDevice = nil
+            } onCancel: { editingDevice = nil }
+        }
+        .confirmationDialog("Remove this device?", isPresented: Binding(get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } })) {
+            Button("Remove Device", role: .destructive) {
+                if let pendingRemoval { state.removeDevice(pendingRemoval.id) }
+                pendingRemoval = nil
+            }
         }
         .onDisappear { state.stopAll() }
     }
@@ -65,6 +83,7 @@ struct ContentView: View {
                     Section {
                         ForEach(recorder.cameras) { camera in
                             Button {
+                                if state.mode == .devices { state.setMode(.live) }
                                 state.selectedCamera = camera
                                 Task {
                                     if await state.hasPassword(for: camera) {
@@ -119,7 +138,7 @@ struct ContentView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 240)
+            .frame(width: 350)
             if let camera = state.selectedCamera, let recorder = state.recorder(for: camera) {
                 Button { credentialRecorder = recorder } label: { Image(systemName: "key") }
                     .help("Recorder credentials")
@@ -176,8 +195,29 @@ struct ContentView: View {
     private var recordingsView: some View {
         VStack(spacing: 12) {
             HStack(spacing: 10) {
-                DatePicker("Date", selection: $state.searchDate, displayedComponents: .date)
-                    .frame(maxWidth: 270)
+                Button {
+                    showingCalendar = true
+                } label: {
+                    Label(dateRangeLabel, systemImage: "calendar")
+                }
+                .popover(isPresented: $showingCalendar) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Choose dates").font(.headline)
+                        Text("Select one day or a range of up to 7 days.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        HStack(alignment: .top, spacing: 18) {
+                            DatePicker("From", selection: Binding(get: { state.startDate }, set: { state.setStartDate($0) }), displayedComponents: .date)
+                                .datePickerStyle(.graphical)
+                            DatePicker("To", selection: Binding(get: { state.endDate }, set: { state.setEndDate($0) }),
+                                       in: state.startDate...(Calendar.current.date(byAdding: .day, value: 6, to: state.startDate) ?? state.startDate),
+                                       displayedComponents: .date)
+                                .datePickerStyle(.graphical)
+                        }
+                        Button("Done") { showingCalendar = false }
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                    .padding(18)
+                }
                 Button("Search") {
                     guard let camera = state.selectedCamera, let recorder = state.recorder(for: camera) else { return }
                     Task {
@@ -202,27 +242,77 @@ struct ContentView: View {
             HStack {
                 Text("Recordings").font(.headline)
                 Spacer()
+                Button("Play", systemImage: "play.fill") { state.play(at: state.selectedTime) }
+                    .disabled(state.recordings.isEmpty)
                 Button("Stop", systemImage: "stop.fill") { state.playbackPlayer.stop() }
             }
             .padding(.horizontal, 14)
-            List(state.recordings) { recording in
-                Button {
-                    state.play(recording)
-                } label: {
+            RecordingTimelineView(start: state.startDate, end: state.timelineEnd, recordings: state.recordings,
+                                  selectedTime: $state.selectedTime, onSeek: { state.play(at: $0) })
+                .padding(.horizontal, 14)
+                .padding(.bottom, 14)
+        }
+    }
+
+    private var dateRangeLabel: String {
+        let start = state.startDate.formatted(date: .abbreviated, time: .omitted)
+        if Calendar.current.isDate(state.startDate, inSameDayAs: state.endDate) { return start }
+        return "\(start) – \(state.endDate.formatted(date: .abbreviated, time: .omitted))"
+    }
+
+    private func newDevice(host: String = "") -> Recorder {
+        let id = UUID().uuidString
+        return Recorder(id: id, name: "New Device", host: host, username: "admin", httpPort: 80,
+                        rtspPort: 554, useHTTPS: false,
+                        cameras: [Camera(id: "manual-\(id)-1", recorderID: id, name: "Camera 1", channelNumber: 1)])
+    }
+
+    private var devicesView: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Devices").font(.title2.weight(.semibold))
+                Spacer()
+                Button("Search LAN") { Task { await state.discover() } }.disabled(state.isDiscovering)
+                Button("Add Device") { editingDevice = newDevice() }
+            }
+            if state.isDiscovering { ProgressView("Searching for ONVIF cameras and recorders…") }
+            if !state.discoveredHosts.isEmpty {
+                Text("Found on LAN").font(.headline)
+                ForEach(state.discoveredHosts, id: \.self) { host in
                     HStack {
-                        Image(systemName: "play.circle.fill")
-                        Text(recording.start.formatted(date: .omitted, time: .shortened))
-                        Text("–")
-                        Text(recording.end.formatted(date: .omitted, time: .shortened))
+                        Text(host)
                         Spacer()
-                        Text(recording.start.formatted(date: .abbreviated, time: .omitted))
-                            .foregroundStyle(.secondary)
+                        Button("Add…") { editingDevice = newDevice(host: host) }
                     }
                 }
-                .buttonStyle(.plain)
+                Divider()
             }
-            .frame(minHeight: 130)
+            List {
+                ForEach(state.recorders) { recorder in
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(recorder.name).font(.headline)
+                            Text("\(recorder.host) · \(recorder.cameras.count) cameras")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Camera Names") {
+                            Task {
+                                if let camera = recorder.cameras.first, await state.hasPassword(for: camera) {
+                                    await state.refreshChannels(for: recorder)
+                                } else { credentialRecorder = recorder }
+                            }
+                        }
+                        Button("Edit") { editingDevice = recorder }
+                        Button(role: .destructive) { pendingRemoval = recorder } label: { Image(systemName: "trash") }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            Text("LAN search uses ONVIF discovery. Devices with discovery disabled can be added by address.")
+                .font(.caption).foregroundStyle(.secondary)
         }
+        .padding(18)
     }
 
     private func openLocalVideo() {

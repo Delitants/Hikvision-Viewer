@@ -31,6 +31,101 @@ public struct Recording: Hashable, Identifiable {
     public let playbackURI: URL
 }
 
+public enum RecordingWindow {
+    public static func days(start: Date, end: Date, calendar: Calendar = .current) -> [Date]? {
+        let first = calendar.startOfDay(for: start)
+        let last = calendar.startOfDay(for: end)
+        guard first <= last else { return nil }
+        var days: [Date] = []
+        var day = first
+        while day <= last {
+            guard days.count < 7 else { return nil }
+            days.append(day)
+            guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { return nil }
+            day = next
+        }
+        return days
+    }
+}
+
+public enum RecordingTimeline {
+    public static func seekTarget(for time: Date, recordings: [Recording]) -> (recording: Recording, time: Date)? {
+        let ordered = recordings.sorted { $0.start < $1.start }
+        for recording in ordered {
+            if time < recording.start { return (recording, recording.start) }
+            if time < recording.end {
+                return (recording, min(time, max(recording.start, recording.end.addingTimeInterval(-3))))
+            }
+        }
+        guard let last = ordered.last else { return nil }
+        return (last, max(last.start, last.end.addingTimeInterval(-3)))
+    }
+}
+
+public enum RecordingPlayback {
+    public static func resume(_ url: URL, elapsedSeconds: TimeInterval) -> URL? {
+        guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              var items = parts.queryItems,
+              let start = items.first(where: { $0.name.lowercased() == "starttime" })?.value,
+              let end = items.first(where: { $0.name.lowercased() == "endtime" })?.value else { return nil }
+        let format = DateFormatter()
+        format.locale = Locale(identifier: "en_US_POSIX")
+        format.timeZone = TimeZone(secondsFromGMT: 0)
+        format.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
+        guard let from = format.date(from: start), let through = format.date(from: end),
+              elapsedSeconds > 0, from.addingTimeInterval(elapsedSeconds + 2) < through else { return nil }
+        let resumed = format.string(from: from.addingTimeInterval(elapsedSeconds))
+        items = items.map { $0.name.lowercased() == "starttime" ? URLQueryItem(name: $0.name, value: resumed) : $0 }
+        parts.queryItems = items
+        return parts.url
+    }
+}
+
+public struct DetectedChannel: Equatable {
+    public let number: Int
+    public let name: String
+}
+
+public enum StreamingChannels {
+    public static func parse(_ data: Data) throws -> [DetectedChannel] {
+        let delegate = StreamingChannelParser()
+        let parser = XMLParser(data: data)
+        parser.delegate = delegate
+        guard parser.parse() else { throw RecordingSearch.ParseError.invalidXML }
+        return delegate.channels.sorted { $0.number < $1.number }
+    }
+}
+
+private final class StreamingChannelParser: NSObject, XMLParserDelegate {
+    var channels: [DetectedChannel] = []
+    private var inside = false
+    private var tag = ""
+    private var value = ""
+    private var id = 0
+    private var name = ""
+    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
+        tag = elementName.split(separator: ":").last.map(String.init) ?? elementName
+        value = ""
+        if tag == "StreamingChannel" { inside = true; id = 0; name = "" }
+    }
+    func parser(_ parser: XMLParser, foundCharacters string: String) { value += string }
+    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
+        let ending = elementName.split(separator: ":").last.map(String.init) ?? elementName
+        if inside {
+            if ending == "id", id == 0 { id = Int(value.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0 }
+            if ending == "channelName" { name = value.trimmingCharacters(in: .whitespacesAndNewlines) }
+            if ending == "StreamingChannel" {
+                if id > 0, id % 100 == 1 {
+                    let number = id / 100
+                    channels.append(DetectedChannel(number: number, name: name.isEmpty ? "Channel \(number)" : name))
+                }
+                inside = false
+            }
+        }
+        tag = ""; value = ""
+    }
+}
+
 public enum LegacyImporter {
     public enum ImportError: Error { case cannotOpenDatabase, invalidQuery }
 

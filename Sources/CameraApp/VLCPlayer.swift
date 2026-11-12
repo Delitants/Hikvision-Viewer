@@ -41,6 +41,7 @@ private enum VLCReaper {
     private var recordingURL: URL?
     private var recovery: PlaybackRecovery?
     private var streams: PlaybackStreamSelection?
+    private var liveStreams: LiveStreamSelection?
     @Published private(set) var isActive = false
     @Published private(set) var isPaused = false
     @Published private(set) var isBuffering = false
@@ -73,6 +74,7 @@ private enum VLCReaper {
         monitor = nil
         recordingURL = recoverRecording ? url : nil
         streams = recoverRecording ? PlaybackStreamSelection(main: url) : nil
+        liveStreams = nil
         streamQuality = .main
         if !recoverRecording {
             onPlaybackTime = nil; onRecovery = nil; onResumed = nil; onCompleted = nil; onFailure = nil; onStreamQuality = nil
@@ -91,6 +93,21 @@ private enum VLCReaper {
             RunLoop.main.add(timer, forMode: .common)
         }
         return started
+    }
+
+    @discardableResult func playLive(main: URL, sub: URL?) -> Bool {
+        var selection = LiveStreamSelection(main: main, sub: sub)
+        var started = play(selection.url)
+        if !started && sub != nil {
+            _ = selection.retry(attempt: 1)
+            started = play(selection.url)
+        }
+        guard started else { stop(); return false }
+        liveStreams = selection
+        streamQuality = selection.quality
+        recovery = PlaybackRecovery(now: ProcessInfo.processInfo.systemUptime, duration: nil,
+                                    finishOnEnded: false, startupGrace: 12)
+        return true
     }
 
     private func start(_ url: URL, cacheMilliseconds: Int) -> Bool {
@@ -114,6 +131,47 @@ private enum VLCReaper {
 
     private func checkPlayback() {
         guard let player else { return }
+        if var liveStreams, var recovery {
+            let currentTime = libvlc_media_player_get_time(player)
+            var stats = libvlc_media_stats_t()
+            let media = libvlc_media_player_get_media(player)
+            let hasStats = media.map { libvlc_media_get_stats($0, &stats) != 0 } ?? false
+            if let media { libvlc_media_release(media) }
+            let state: PlaybackEngineState
+            switch libvlc_media_player_get_state(player) {
+            case libvlc_Playing: state = .playing
+            case libvlc_Paused: state = .paused
+            case libvlc_Stopped: state = .stopped
+            case libvlc_Ended: state = .ended
+            case libvlc_Error: state = .failed
+            case libvlc_Buffering: state = .buffering
+            default: state = .opening
+            }
+            let update = recovery.observe(now: ProcessInfo.processInfo.systemUptime,
+                                          mediaTime: max(0, Double(currentTime) / 1000),
+                                          pictures: hasStats ? Int(stats.i_displayed_pictures) : nil,
+                                          state: state)
+            self.recovery = recovery
+            if update.progress != nil {
+                liveStreams.displayedFrame()
+                isBuffering = false
+            }
+            switch update.action {
+            case .none:
+                if state == .buffering || state == .opening { isBuffering = true }
+            case let .retry(_, attempt, cache):
+                let nextURL = liveStreams.retry(attempt: attempt)
+                if streamQuality != liveStreams.quality {
+                    streamQuality = liveStreams.quality
+                    onStreamQuality?(streamQuality)
+                }
+                isBuffering = true
+                _ = start(nextURL, cacheMilliseconds: cache)
+            case .finished: break
+            }
+            self.liveStreams = liveStreams
+            return
+        }
         guard let original = recordingURL, var recovery else {
             let state = libvlc_media_player_get_state(player)
             isBuffering = !isPaused && (state == libvlc_Opening || state == libvlc_Buffering)
@@ -192,6 +250,7 @@ private enum VLCReaper {
         recordingURL = nil
         recovery = nil
         streams = nil
+        liveStreams = nil
         isActive = false
         isPaused = false
         isBuffering = false

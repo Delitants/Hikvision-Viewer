@@ -19,7 +19,7 @@ public struct Recorder: Codable, Hashable, Identifiable {
     public let cameras: [Camera]
 }
 
-public enum StreamQuality: Int {
+public enum StreamQuality: Int, Hashable {
     case main = 1
     case sub = 2
 }
@@ -112,6 +112,29 @@ public struct PlaybackStreamSelection {
             return RecordingPlayback.resume(main, elapsedSeconds: elapsed)
         }
         return nil
+    }
+}
+
+public struct LiveStreamSelection {
+    public private(set) var quality: StreamQuality
+    private let main: URL
+    private let sub: URL?
+    private var displayedFrameSinceRetry = false
+
+    public init(main: URL, sub: URL?) {
+        self.main = main
+        self.sub = sub
+        quality = sub == nil ? .main : .sub
+    }
+
+    public var url: URL { quality == .sub ? (sub ?? main) : main }
+
+    public mutating func displayedFrame() { displayedFrameSinceRetry = true }
+
+    public mutating func retry(attempt: Int) -> URL {
+        if quality == .sub && (!displayedFrameSinceRetry || attempt >= 2) { quality = .main }
+        displayedFrameSinceRetry = false
+        return url
     }
 }
 

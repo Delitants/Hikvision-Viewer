@@ -159,6 +159,14 @@ struct ContentView: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 225)
+                Picker("Live stream", selection: Binding(get: { state.liveQuality }, set: { state.setLiveQuality($0) })) {
+                    Text("Substream").tag(StreamQuality.sub)
+                    Text("Main").tag(StreamQuality.main)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 190)
+                .help("Start live video on the substream. If it is unavailable, the app switches to main.")
                 Spacer()
                 Button("Stop All", systemImage: "stop.fill") { state.stopLive() }
             }

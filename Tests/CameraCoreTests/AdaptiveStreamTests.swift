@@ -53,4 +53,37 @@ final class AdaptiveStreamTests: XCTestCase {
         XCTAssertTrue(retry.path.hasSuffix("/101"))
         XCTAssertEqual(streams.quality, .main)
     }
+
+    func testLiveViewStartsOnSubstreamAndFallsBackWhenItNeverDisplaysVideo() throws {
+        let main = try XCTUnwrap(URL(string: "rtsp://192.0.2.1/Streaming/Channels/101"))
+        let sub = try XCTUnwrap(URL(string: "rtsp://192.0.2.1/Streaming/Channels/102"))
+        var streams = LiveStreamSelection(main: main, sub: sub)
+
+        XCTAssertEqual(streams.quality, .sub)
+        XCTAssertEqual(streams.url, sub)
+        XCTAssertEqual(streams.retry(attempt: 1), main)
+        XCTAssertEqual(streams.quality, .main)
+    }
+
+    func testLiveViewRetriesWorkingSubstreamBeforeFallingBackAfterRepeatedStalls() throws {
+        let main = try XCTUnwrap(URL(string: "rtsp://192.0.2.1/Streaming/Channels/101"))
+        let sub = try XCTUnwrap(URL(string: "rtsp://192.0.2.1/Streaming/Channels/102"))
+        var streams = LiveStreamSelection(main: main, sub: sub)
+
+        streams.displayedFrame()
+        XCTAssertEqual(streams.retry(attempt: 1), sub)
+        streams.displayedFrame()
+        XCTAssertEqual(streams.retry(attempt: 2), main)
+        XCTAssertEqual(streams.quality, .main)
+        XCTAssertEqual(streams.retry(attempt: 3), main)
+    }
+
+    func testLiveViewCanStartOnMainStreamWhenSelected() throws {
+        let main = try XCTUnwrap(URL(string: "rtsp://192.0.2.1/Streaming/Channels/101"))
+        var streams = LiveStreamSelection(main: main, sub: nil)
+
+        XCTAssertEqual(streams.quality, .main)
+        XCTAssertEqual(streams.url, main)
+        XCTAssertEqual(streams.retry(attempt: 1), main)
+    }
 }

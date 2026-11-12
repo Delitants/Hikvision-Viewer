@@ -13,6 +13,7 @@ enum ViewMode: String, CaseIterable, Identifiable {
     @Published var selectedCamera: Camera?
     @Published var mode: ViewMode = .live
     @Published var gridCount = 1
+    @Published var liveQuality: StreamQuality = .sub
     @Published var selectedTile = 0
     @Published var slots: [Camera?] = Array(repeating: nil, count: 4)
     @Published var recordings: [Recording] = []
@@ -173,6 +174,15 @@ enum ViewMode: String, CaseIterable, Identifiable {
         }
     }
 
+    func setLiveQuality(_ quality: StreamQuality) {
+        guard liveQuality != quality else { return }
+        liveQuality = quality
+        guard mode == .live else { return }
+        for index in 0..<gridCount {
+            if players[index].isActive, let camera = slots[index] { start(camera, in: index) }
+        }
+    }
+
     func show(_ camera: Camera) {
         selectedCamera = camera
         guard mode == .live else { return }
@@ -193,14 +203,23 @@ enum ViewMode: String, CaseIterable, Identifiable {
             status = "Enter the recorder password to play video."
             return
         }
-        let quality: StreamQuality = gridCount == 1 ? .main : .sub
-        guard let url = CameraURLs.live(host: recorder.host, port: recorder.rtspPort, channel: camera.channelNumber,
-                                        quality: quality, username: recorder.username, password: password) else {
+        guard let main = CameraURLs.live(host: recorder.host, port: recorder.rtspPort, channel: camera.channelNumber,
+                                         quality: .main, username: recorder.username, password: password) else {
             status = "The recorder address is invalid."
             return
         }
+        let sub = liveQuality == .sub
+            ? CameraURLs.live(host: recorder.host, port: recorder.rtspPort, channel: camera.channelNumber,
+                              quality: .sub, username: recorder.username, password: password)
+            : nil
         slots[index] = camera
-        status = players[index].play(url) ? "Connecting to \(camera.name)…" : "Could not start the video player."
+        let player = players[index]
+        let started = player.playLive(main: main, sub: sub)
+        player.onStreamQuality = { [weak self] actual in
+            if actual == .main { self?.status = "\(camera.name): substream unavailable; using main stream." }
+        }
+        status = started ? "Connecting to \(camera.name) (\(player.streamQuality == .sub ? "substream" : "main stream"))…"
+                         : "Could not start the video player."
     }
 
     func stopLive() {

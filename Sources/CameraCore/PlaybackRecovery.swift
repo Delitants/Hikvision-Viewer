@@ -16,6 +16,8 @@ public struct PlaybackRecovery {
 
     public private(set) var confirmedElapsed: TimeInterval = 0
     private let duration: TimeInterval?
+    private let finishOnEnded: Bool
+    private let startupGrace: TimeInterval
     private var lastFrameAt: TimeInterval
     private var lastRetryAt = -Double.infinity
     private var stableSince: TimeInterval?
@@ -29,9 +31,12 @@ public struct PlaybackRecovery {
     private var finished = false
     private var attempts = 0
 
-    public init(now: TimeInterval, duration: TimeInterval?) {
+    public init(now: TimeInterval, duration: TimeInterval?, finishOnEnded: Bool = true,
+                startupGrace: TimeInterval = 30) {
         lastFrameAt = now
         self.duration = duration
+        self.finishOnEnded = finishOnEnded
+        self.startupGrace = startupGrace
     }
 
     public mutating func observe(now: TimeInterval, mediaTime: TimeInterval, pictures: Int?,
@@ -66,13 +71,13 @@ public struct PlaybackRecovery {
 
         let nearEnd = duration.map { sawFrame && confirmedElapsed >= max(0, $0 - 2) } ?? false
         if (nearEnd && (state == .ended || state == .stopped || now - lastFrameAt >= 3)) ||
-            (duration == nil && sawFrame && state == .ended) {
+            (finishOnEnded && duration == nil && sawFrame && state == .ended) {
             finished = true
             update.action = .finished
             return update
         }
 
-        let stale = now - lastFrameAt > (sawFrame ? 12 : 30)
+        let stale = now - lastFrameAt > (sawFrame ? 12 : startupGrace)
         guard stale || state == .failed || state == .stopped || state == .ended else { return update }
         let backoff = min(30, pow(2, Double(min(attempts, 5))))
         guard now - lastRetryAt >= backoff else { return update }

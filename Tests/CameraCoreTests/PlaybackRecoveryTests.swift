@@ -73,4 +73,14 @@ final class PlaybackRecoveryTests: XCTestCase {
         XCTAssertEqual(target.time, next.start)
         XCTAssertNil(RecordingTimeline.next(after: next, recordings: [first, next]))
     }
+
+    func testLiveStreamRetriesSlowStartupAndReconnectsAfterEnd() {
+        var recovery = PlaybackRecovery(now: 0, duration: nil, finishOnEnded: false, startupGrace: 12)
+        XCTAssertEqual(recovery.observe(now: 11, mediaTime: 0, pictures: 0, state: .buffering).action, .none)
+        XCTAssertEqual(recovery.observe(now: 13, mediaTime: 0, pictures: 0, state: .buffering).action,
+                       .retry(elapsed: 0, attempt: 1, cacheMilliseconds: 5000))
+        _ = recovery.observe(now: 14, mediaTime: 1, pictures: 10, state: .playing)
+        XCTAssertEqual(recovery.observe(now: 15, mediaTime: 1, pictures: 10, state: .ended).action,
+                       .retry(elapsed: 0, attempt: 2, cacheMilliseconds: 7000))
+    }
 }

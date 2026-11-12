@@ -213,6 +213,7 @@ enum ViewMode: String, CaseIterable, Identifiable {
         selectedTime = startDate
         recordings = []
         playbackPlayer.stop()
+        status = "Dates changed. Search recordings."
     }
 
     func setEndDate(_ date: Date) {
@@ -222,6 +223,7 @@ enum ViewMode: String, CaseIterable, Identifiable {
         selectedTime = startDate
         recordings = []
         playbackPlayer.stop()
+        status = "Dates changed. Search recordings."
     }
 
     func search() async {

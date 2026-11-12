@@ -167,6 +167,15 @@ struct ContentView: View {
                 .labelsHidden()
                 .frame(width: 190)
                 .help("Start live video on the substream. If it is unavailable, the app switches to main.")
+                Text("Buffer")
+                Picker("Live buffer", selection: Binding(get: { state.liveBufferMode }, set: { state.setLiveBufferMode($0) })) {
+                    Text("Smooth").tag(LiveBufferMode.smooth)
+                    Text("Low delay").tag(LiveBufferMode.responsive)
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .frame(width: 130)
+                .help("Smooth buffers more video and may reduce short pauses. Low delay starts faster with a shorter live delay.")
                 Spacer()
                 Button("Stop All", systemImage: "stop.fill") { state.stopLive() }
             }

@@ -34,6 +34,8 @@ private enum VLCReaper {
     }
 }
 
+enum LiveVideoState { case buffering, playing }
+
 @MainActor final class VLCPlayer: ObservableObject {
     private var player: OpaquePointer?
     private weak var view: NSView?
@@ -42,6 +44,7 @@ private enum VLCReaper {
     private var recovery: PlaybackRecovery?
     private var streams: PlaybackStreamSelection?
     private var liveStreams: LiveStreamSelection?
+    private var liveBufferMode: LiveBufferMode = .smooth
     @Published private(set) var isActive = false
     @Published private(set) var isPaused = false
     @Published private(set) var isBuffering = false
@@ -52,6 +55,7 @@ private enum VLCReaper {
     var onCompleted: (() -> Void)?
     var onFailure: (() -> Void)?
     var onStreamQuality: ((StreamQuality) -> Void)?
+    var onLiveState: ((LiveVideoState) -> Void)?
 
     init() {}
 
@@ -69,7 +73,8 @@ private enum VLCReaper {
         self.view = nil
     }
 
-    @discardableResult func play(_ url: URL, recoverRecording: Bool = false) -> Bool {
+    @discardableResult func play(_ url: URL, recoverRecording: Bool = false,
+                                 cacheMilliseconds: Int = 3_000) -> Bool {
         monitor?.invalidate()
         monitor = nil
         recordingURL = recoverRecording ? url : nil
@@ -77,12 +82,12 @@ private enum VLCReaper {
         liveStreams = nil
         streamQuality = .main
         if !recoverRecording {
-            onPlaybackTime = nil; onRecovery = nil; onResumed = nil; onCompleted = nil; onFailure = nil; onStreamQuality = nil
+            onPlaybackTime = nil; onRecovery = nil; onResumed = nil; onCompleted = nil; onFailure = nil; onStreamQuality = nil; onLiveState = nil
         }
         recovery = recoverRecording ? PlaybackRecovery(now: ProcessInfo.processInfo.systemUptime,
                                                        duration: RecordingPlayback.duration(url)) : nil
         isPaused = false
-        let started = start(url, cacheMilliseconds: 3000)
+        let started = start(url, cacheMilliseconds: cacheMilliseconds)
         isActive = started
         isBuffering = started
         if started {
@@ -95,18 +100,19 @@ private enum VLCReaper {
         return started
     }
 
-    @discardableResult func playLive(main: URL, sub: URL?) -> Bool {
+    @discardableResult func playLive(main: URL, sub: URL?, bufferMode: LiveBufferMode = .smooth) -> Bool {
         var selection = LiveStreamSelection(main: main, sub: sub)
-        var started = play(selection.url)
+        var started = play(selection.url, cacheMilliseconds: bufferMode.initialCacheMilliseconds)
         if !started && sub != nil {
             _ = selection.retry(attempt: 1)
-            started = play(selection.url)
+            started = play(selection.url, cacheMilliseconds: bufferMode.initialCacheMilliseconds)
         }
         guard started else { stop(); return false }
         liveStreams = selection
+        liveBufferMode = bufferMode
         streamQuality = selection.quality
         recovery = PlaybackRecovery(now: ProcessInfo.processInfo.systemUptime, duration: nil,
-                                    finishOnEnded: false, startupGrace: 12)
+                                    finishOnEnded: false, startupGrace: bufferMode.startupGraceSeconds)
         return true
     }
 
@@ -154,19 +160,24 @@ private enum VLCReaper {
             self.recovery = recovery
             if update.progress != nil {
                 liveStreams.displayedFrame()
+                if isBuffering { onLiveState?(.playing) }
                 isBuffering = false
             }
             switch update.action {
             case .none:
-                if state == .buffering || state == .opening { isBuffering = true }
-            case let .retry(_, attempt, cache):
+                if (state == .buffering || state == .opening || update.frameStalled) && !isBuffering {
+                    isBuffering = true
+                    onLiveState?(.buffering)
+                }
+            case let .retry(_, attempt, _):
                 let nextURL = liveStreams.retry(attempt: attempt)
                 if streamQuality != liveStreams.quality {
                     streamQuality = liveStreams.quality
                     onStreamQuality?(streamQuality)
                 }
+                if !isBuffering { onLiveState?(.buffering) }
                 isBuffering = true
-                _ = start(nextURL, cacheMilliseconds: cache)
+                _ = start(nextURL, cacheMilliseconds: liveBufferMode.cacheMilliseconds(forRetry: attempt))
             case .finished: break
             }
             self.liveStreams = liveStreams
@@ -206,7 +217,7 @@ private enum VLCReaper {
         if update.resumed { onResumed?() }
         switch update.action {
         case .none:
-            if engineState == .buffering || engineState == .opening { isBuffering = !isPaused }
+            if engineState == .buffering || engineState == .opening || update.frameStalled { isBuffering = !isPaused }
         case let .retry(elapsed, attempt, cache):
             if engineState == .ended && streamQuality == .sub { streams?.rejectSubstream() }
             let nextURL: URL?
@@ -260,6 +271,7 @@ private enum VLCReaper {
         onCompleted = nil
         onFailure = nil
         onStreamQuality = nil
+        onLiveState = nil
         if let player {
             self.player = nil
             libvlc_media_player_set_nsobject(player, nil)

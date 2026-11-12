@@ -11,6 +11,7 @@ public struct PlaybackRecovery {
     public struct Update {
         public var progress: TimeInterval?
         public var resumed = false
+        public var frameStalled = false
         public var action: Action = .none
     }
 
@@ -68,6 +69,7 @@ public struct PlaybackRecovery {
             if recovering { update.resumed = true; recovering = false }
             if now - (stableSince ?? now) >= 15 { attempts = 0 }
         }
+        update.frameStalled = sawFrame && now - lastFrameAt >= 3
 
         let nearEnd = duration.map { sawFrame && confirmedElapsed >= max(0, $0 - 2) } ?? false
         if (nearEnd && (state == .ended || state == .stopped || now - lastFrameAt >= 3)) ||

@@ -24,6 +24,20 @@ public enum StreamQuality: Int, Hashable {
     case sub = 2
 }
 
+public enum LiveBufferMode: Int, Hashable {
+    case responsive = 3_000
+    case smooth = 8_000
+
+    public var initialCacheMilliseconds: Int { rawValue }
+    public var startupGraceSeconds: TimeInterval {
+        12 + Double(rawValue - LiveBufferMode.responsive.rawValue) / 1_000
+    }
+
+    public func cacheMilliseconds(forRetry attempt: Int) -> Int {
+        max(rawValue, min(10_000, 3_000 + min(4, max(0, attempt)) * 2_000))
+    }
+}
+
 public enum RecordingKind: String { case continuous, event, manual, unknown }
 
 public struct Recording: Hashable, Identifiable {

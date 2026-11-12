@@ -86,4 +86,16 @@ final class AdaptiveStreamTests: XCTestCase {
         XCTAssertEqual(streams.url, main)
         XCTAssertEqual(streams.retry(attempt: 1), main)
     }
+
+    func testSmoothLiveBufferNeverShrinksOnReconnectAndHasBoundedDelay() {
+        let smooth = LiveBufferMode.smooth
+        let responsive = LiveBufferMode.responsive
+        XCTAssertGreaterThan(smooth.initialCacheMilliseconds, responsive.initialCacheMilliseconds)
+        XCTAssertEqual(responsive.startupGraceSeconds, 12)
+        XCTAssertEqual(smooth.startupGraceSeconds, 17)
+        for attempt in 1...5 {
+            XCTAssertGreaterThanOrEqual(smooth.cacheMilliseconds(forRetry: attempt), smooth.initialCacheMilliseconds)
+            XCTAssertLessThanOrEqual(smooth.cacheMilliseconds(forRetry: attempt), 10_000)
+        }
+    }
 }

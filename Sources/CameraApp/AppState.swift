@@ -14,6 +14,7 @@ enum ViewMode: String, CaseIterable, Identifiable {
     @Published var mode: ViewMode = .live
     @Published var gridCount = 1
     @Published var liveQuality: StreamQuality = .sub
+    @Published var liveBufferMode: LiveBufferMode = .smooth
     @Published var selectedTile = 0
     @Published var slots: [Camera?] = Array(repeating: nil, count: 4)
     @Published var recordings: [Recording] = []
@@ -183,6 +184,15 @@ enum ViewMode: String, CaseIterable, Identifiable {
         }
     }
 
+    func setLiveBufferMode(_ bufferMode: LiveBufferMode) {
+        guard liveBufferMode != bufferMode else { return }
+        liveBufferMode = bufferMode
+        guard mode == .live else { return }
+        for index in 0..<gridCount {
+            if players[index].isActive, let camera = slots[index] { start(camera, in: index) }
+        }
+    }
+
     func show(_ camera: Camera) {
         selectedCamera = camera
         guard mode == .live else { return }
@@ -214,9 +224,15 @@ enum ViewMode: String, CaseIterable, Identifiable {
             : nil
         slots[index] = camera
         let player = players[index]
-        let started = player.playLive(main: main, sub: sub)
+        let started = player.playLive(main: main, sub: sub, bufferMode: liveBufferMode)
         player.onStreamQuality = { [weak self] actual in
-            if actual == .main { self?.status = "\(camera.name): substream unavailable; using main stream." }
+            if actual == .main { self?.status = "\(camera.name): substream stalled or unavailable; trying main stream." }
+        }
+        player.onLiveState = { [weak self] liveState in
+            guard let self, self.slots[index]?.id == camera.id, self.mode == .live else { return }
+            let quality = self.players[index].streamQuality == .sub ? "substream" : "main stream"
+            self.status = liveState == .playing ? "\(camera.name): Live on \(quality)."
+                                                : "\(camera.name): Buffering \(quality)…"
         }
         status = started ? "Connecting to \(camera.name) (\(player.streamQuality == .sub ? "substream" : "main stream"))…"
                          : "Could not start the video player."
@@ -224,6 +240,7 @@ enum ViewMode: String, CaseIterable, Identifiable {
 
     func stopLive() {
         players.forEach { $0.stop() }
+        if mode == .live { status = "Live view stopped." }
     }
 
     func stopAll() {

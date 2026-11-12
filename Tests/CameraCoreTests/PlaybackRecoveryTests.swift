@@ -23,6 +23,16 @@ final class PlaybackRecoveryTests: XCTestCase {
         XCTAssertEqual(recovery.confirmedElapsed, 4)
     }
 
+    func testFrameGapReportsBufferingBeforeRetryAndClearsOnResume() {
+        var recovery = PlaybackRecovery(now: 0, duration: nil, finishOnEnded: false)
+        XCTAssertFalse(recovery.observe(now: 1, mediaTime: 1, pictures: 10, state: .playing).frameStalled)
+        XCTAssertFalse(recovery.observe(now: 3, mediaTime: 3, pictures: 10, state: .playing).frameStalled)
+        let stalled = recovery.observe(now: 4, mediaTime: 4, pictures: 10, state: .playing)
+        XCTAssertTrue(stalled.frameStalled)
+        XCTAssertEqual(stalled.action, .none)
+        XCTAssertFalse(recovery.observe(now: 5, mediaTime: 5, pictures: 20, state: .playing).frameStalled)
+    }
+
     func testSlowFramesKeepConnectionAndLongStartupGetsTimeToBuffer() {
         var recovery = PlaybackRecovery(now: 0, duration: 120)
         XCTAssertEqual(recovery.observe(now: 25, mediaTime: 0, pictures: 0, state: .buffering).action, .none)

@@ -59,7 +59,8 @@ enum ISAPIClient {
         return try StreamingChannels.parse(data)
     }
 
-    static func search(recorder: Recorder, camera: Camera, password: String, on day: Date) async throws -> [Recording] {
+    static func search(recorder: Recorder, camera: Camera, password: String, on day: Date,
+                       quality: StreamQuality = .main) async throws -> [Recording] {
         guard !recorder.host.isEmpty, (1...65535).contains(recorder.httpPort) else { throw ISAPIError.invalidAddress }
         var components = URLComponents()
         components.scheme = recorder.useHTTPS ? "https" : "http"
@@ -83,7 +84,8 @@ enum ISAPIClient {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("application/xml", forHTTPHeaderField: "Content-Type")
-            request.httpBody = RecordingSearch.request(channel: camera.channelNumber, start: start, end: end, position: position)
+            request.httpBody = RecordingSearch.request(channel: camera.channelNumber, start: start, end: end,
+                                                       position: position, quality: quality)
             let (data, response): (Data, URLResponse)
             do { (data, response) = try await session.data(for: request) }
             catch {

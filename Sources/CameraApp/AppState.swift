@@ -23,10 +23,13 @@ enum ViewMode: String, CaseIterable, Identifiable {
     @Published var isDiscovering = false
     @Published var discoveredHosts: [String] = []
     @Published var status = "Select a camera to begin."
+    @Published var playbackStreamNote: String?
 
     let players: [VLCPlayer] = (0..<4).map { _ in VLCPlayer() }
     let playbackPlayer = VLCPlayer()
     private var passwords: [String: String] = [:]
+    private var searchID = UUID()
+    private var playbackID = UUID()
 
     private static var settingsURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -155,7 +158,7 @@ enum ViewMode: String, CaseIterable, Identifiable {
     func setMode(_ mode: ViewMode) {
         self.mode = mode
         if mode != .live { stopLive() }
-        if mode != .recordings { playbackPlayer.stop() }
+        if mode != .recordings { playbackID = UUID(); playbackStreamNote = nil; playbackPlayer.stop() }
     }
 
     func setGrid(_ count: Int) {
@@ -175,6 +178,14 @@ enum ViewMode: String, CaseIterable, Identifiable {
         guard mode == .live else { return }
         start(camera, in: selectedTile)
         selectedTile = (selectedTile + 1) % gridCount
+    }
+
+    func selectCamera(_ camera: Camera) {
+        if selectedCamera?.id != camera.id, mode == .recordings {
+            invalidateRecordings()
+            status = "Search recordings for this camera."
+        }
+        selectedCamera = camera
     }
 
     private func start(_ camera: Camera, in index: Int) {
@@ -198,6 +209,8 @@ enum ViewMode: String, CaseIterable, Identifiable {
 
     func stopAll() {
         stopLive()
+        playbackID = UUID()
+        playbackStreamNote = nil
         playbackPlayer.stop()
     }
 
@@ -205,14 +218,22 @@ enum ViewMode: String, CaseIterable, Identifiable {
         Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: endDate)) ?? endDate
     }
 
+    private func invalidateRecordings() {
+        searchID = UUID()
+        playbackID = UUID()
+        playbackStreamNote = nil
+        isSearching = false
+        selectedTime = startDate
+        recordings = []
+        playbackPlayer.stop()
+    }
+
     func setStartDate(_ date: Date) {
         let calendar = Calendar.current
         startDate = calendar.startOfDay(for: date)
         let latest = calendar.date(byAdding: .day, value: 6, to: startDate) ?? startDate
         endDate = min(max(endDate, startDate), latest)
-        selectedTime = startDate
-        recordings = []
-        playbackPlayer.stop()
+        invalidateRecordings()
         status = "Dates changed. Search recordings."
     }
 
@@ -220,9 +241,7 @@ enum ViewMode: String, CaseIterable, Identifiable {
         let calendar = Calendar.current
         let latest = calendar.date(byAdding: .day, value: 6, to: startDate) ?? startDate
         endDate = min(max(calendar.startOfDay(for: date), startDate), latest)
-        selectedTime = startDate
-        recordings = []
-        playbackPlayer.stop()
+        invalidateRecordings()
         status = "Dates changed. Search recordings."
     }
 
@@ -232,12 +251,18 @@ enum ViewMode: String, CaseIterable, Identifiable {
             status = "Enter the recorder password to search recordings."
             return
         }
+        let requestID = UUID()
+        searchID = requestID
+        let firstDate = startDate, lastDate = endDate
+        playbackID = UUID()
+        playbackStreamNote = nil
+        playbackPlayer.stop()
         isSearching = true
         recordings = []
         status = "Searching recordings…"
-        defer { isSearching = false }
+        defer { if searchID == requestID { isSearching = false } }
         do {
-            guard let days = RecordingWindow.days(start: startDate, end: endDate) else {
+            guard let days = RecordingWindow.days(start: firstDate, end: lastDate) else {
                 status = "Choose no more than seven calendar days."
                 return
             }
@@ -245,11 +270,13 @@ enum ViewMode: String, CaseIterable, Identifiable {
             for (index, day) in days.enumerated() {
                 status = "Searching day \(index + 1) of \(days.count)…"
                 found += try await ISAPIClient.search(recorder: recorder, camera: camera, password: password, on: day)
+                guard searchID == requestID else { return }
             }
             recordings = Array(Set(found)).sorted { $0.start < $1.start }
-            selectedTime = recordings.first?.start ?? startDate
+            selectedTime = max(recordings.first?.start ?? startDate, startDate)
             status = recordings.isEmpty ? "No recordings found for this range." : "Found \(recordings.count) recording segments."
         } catch {
+            guard searchID == requestID else { return }
             status = error.localizedDescription
         }
     }
@@ -273,20 +300,83 @@ enum ViewMode: String, CaseIterable, Identifiable {
             status = "The recorder returned a playback address for a different host."
             return
         }
+        let requestID = UUID()
+        playbackID = requestID
+        playbackStreamNote = nil
         playbackPlayer.onPlaybackTime = { [weak self] seconds in
             self?.selectedTime = min(target.time.addingTimeInterval(seconds), target.recording.end)
         }
         playbackPlayer.onRecovery = { [weak self] attempt in
-            self?.status = "Connection interrupted. Resuming recording (attempt \(attempt))…"
+            guard let self, self.playbackID == requestID else { return }
+            self.status = "Connection interrupted. Resuming recording (attempt \(attempt))…"
+            if attempt == 1 {
+                Task { await self.findRecordedSubstream(recorder: recorder, camera: camera, password: password,
+                                                        target: target, requestID: requestID) }
+            }
+        }
+        playbackPlayer.onStreamQuality = { [weak self] quality in
+            guard let self, self.playbackID == requestID else { return }
+            self.status = quality == .sub ? "Using lower-bandwidth recorded substream." : "Substream unavailable. Resuming main recording."
+            self.playbackStreamNote = quality == .sub ? "Using recorded substream" : "Recorded substream failed; using main"
         }
         playbackPlayer.onResumed = { [weak self] in
             self?.status = "Playback resumed."
         }
+        playbackPlayer.onCompleted = { [weak self] in
+            guard let self else { return }
+            self.selectedTime = min(target.recording.end, self.timelineEnd.addingTimeInterval(-1))
+            if let next = RecordingTimeline.next(after: target.recording, recordings: self.recordings), next.time < self.timelineEnd {
+                self.play(at: next.time)
+            } else { self.status = "End of recordings for this range." }
+        }
+        playbackPlayer.onFailure = { [weak self] in
+            self?.status = "The recorder could not resume this segment. Select another time to retry."
+        }
         status = playbackPlayer.play(url, recoverRecording: true) ? "Playing recording…" : "Could not start playback."
+    }
+
+    private func findRecordedSubstream(recorder: Recorder, camera: Camera, password: String,
+                                       target: (recording: Recording, time: Date), requestID: UUID) async {
+        let matches: [Recording]
+        do { matches = try await ISAPIClient.search(recorder: recorder, camera: camera, password: password,
+                                                   on: target.time, quality: .sub) }
+        catch {
+            if playbackID == requestID { playbackStreamNote = "Could not check recorded substream" }
+            return
+        }
+        guard playbackID == requestID else { return }
+        guard let match = matches.first(where: { $0.start <= target.time && $0.end > target.time.addingTimeInterval(5)
+            && $0.playbackURI.lastPathComponent == String(camera.channelNumber * 100 + StreamQuality.sub.rawValue) }) else {
+            playbackStreamNote = "No recorded substream at this time"
+            return
+        }
+        let offset = target.time.timeIntervalSince(match.start)
+        let uri = offset > 0 ? RecordingPlayback.resume(match.playbackURI, elapsedSeconds: offset) : match.playbackURI
+        guard let uri, let authenticated = CameraURLs.authenticated(uri, expectedHost: recorder.host,
+                                                                     username: recorder.username, password: password,
+                                                                     port: recorder.rtspPort) else { return }
+        playbackPlayer.setRecordedSubstream(authenticated)
+        playbackStreamNote = "Recorded substream available"
+    }
+
+    func togglePlayback() {
+        if playbackPlayer.isActive {
+            playbackPlayer.togglePause()
+            status = playbackPlayer.isPaused ? "Playback paused." : "Playing recording…"
+        } else { play(at: selectedTime) }
+    }
+
+    func stopPlayback() {
+        playbackID = UUID()
+        playbackStreamNote = nil
+        playbackPlayer.stop()
+        status = "Playback stopped."
     }
 
     func openLocalVideo(_ url: URL) {
         setMode(.recordings)
+        playbackID = UUID()
+        playbackStreamNote = nil
         status = playbackPlayer.play(url) ? "Playing local video." : "Could not open the video file."
     }
 }

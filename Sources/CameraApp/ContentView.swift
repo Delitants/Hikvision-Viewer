@@ -80,7 +80,7 @@ struct ContentView: View {
                         ForEach(recorder.cameras) { camera in
                             Button {
                                 if state.mode == .devices { state.setMode(.live) }
-                                state.selectedCamera = camera
+                                state.selectCamera(camera)
                                 Task {
                                     if await state.hasPassword(for: camera) {
                                         if state.selectedCamera?.id == camera.id { state.show(camera) }
@@ -220,6 +220,7 @@ struct ContentView: View {
                             .frame(maxWidth: .infinity, alignment: .trailing)
                     }
                     .padding(18)
+                    .background(Color(nsColor: .windowBackgroundColor))
                 }
                 Button("Search") {
                     guard let camera = state.selectedCamera, let recorder = state.recorder(for: camera) else { return }
@@ -244,10 +245,10 @@ struct ContentView: View {
 
             HStack {
                 Text("Recordings").font(.headline)
+                if let note = state.playbackStreamNote { Text(note).font(.caption).foregroundStyle(.secondary) }
                 Spacer()
-                Button("Play", systemImage: "play.fill") { state.play(at: state.selectedTime) }
-                    .disabled(state.recordings.isEmpty)
-                Button("Stop", systemImage: "stop.fill") { state.playbackPlayer.stop() }
+                RecordingPlaybackControls(player: state.playbackPlayer, hasRecordings: !state.recordings.isEmpty,
+                                          onPlayPause: { state.togglePlayback() }, onStop: { state.stopPlayback() })
             }
             .padding(.horizontal, 14)
             RecordingTimelineView(start: state.startDate, end: state.timelineEnd, recordings: state.recordings,

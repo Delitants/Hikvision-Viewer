@@ -16,7 +16,7 @@ CLANG_MODULE_CACHE_PATH="$project_dir/.cache/clang" xcrun swiftc \
   -I "$vlc_root/include" -L "$vlc_root/lib" \
   -Xlinker -rpath -Xlinker "$vlc_root/lib" \
   -lsqlite3 -lvlc \
-  "$project_dir/Sources/CameraCore/Core.swift" "$project_dir"/Sources/CameraApp/*.swift \
+  "$project_dir"/Sources/CameraCore/*.swift "$project_dir"/Sources/CameraApp/*.swift \
   -o "$app_dir/Contents/MacOS/HikvisionViewer"
 
 codesign --force --sign - --timestamp=none "$app_dir"

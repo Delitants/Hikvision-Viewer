@@ -24,11 +24,18 @@ public enum StreamQuality: Int {
     case sub = 2
 }
 
+public enum RecordingKind: String { case continuous, event, manual, unknown }
+
 public struct Recording: Hashable, Identifiable {
     public var id: String { playbackURI.absoluteString }
     public let start: Date
     public let end: Date
     public let playbackURI: URL
+    public let kind: RecordingKind
+
+    public init(start: Date, end: Date, playbackURI: URL, kind: RecordingKind = .continuous) {
+        self.start = start; self.end = end; self.playbackURI = playbackURI; self.kind = kind
+    }
 }
 
 public enum RecordingWindow {
@@ -49,6 +56,11 @@ public enum RecordingWindow {
 }
 
 public enum RecordingTimeline {
+    public static func next(after current: Recording, recordings: [Recording]) -> (recording: Recording, time: Date)? {
+        guard let next = recordings.sorted(by: { $0.start < $1.start }).first(where: { $0.end > current.end && $0.start >= current.start }) else { return nil }
+        return (next, max(current.end, next.start))
+    }
+
     public static func seekTarget(for time: Date, recordings: [Recording]) -> (recording: Recording, time: Date)? {
         let ordered = recordings.sorted { $0.start < $1.start }
         for recording in ordered {
@@ -62,7 +74,60 @@ public enum RecordingTimeline {
     }
 }
 
+public struct PlaybackStreamSelection {
+    public private(set) var quality: StreamQuality = .main
+    private let main: URL
+    private var recordedSubstream: URL?
+    private var substreamRejected = false
+    private var substreamDisplayedFrame = false
+
+    public init(main: URL) { self.main = main }
+
+    public mutating func setRecordedSubstream(_ url: URL) {
+        guard !substreamRejected else { return }
+        recordedSubstream = url
+    }
+
+    public mutating func displayedFrame() {
+        if quality == .sub { substreamDisplayedFrame = true }
+    }
+
+    public mutating func rejectSubstream() {
+        quality = .main
+        substreamRejected = true
+        recordedSubstream = nil
+    }
+
+    public mutating func retry(elapsed: TimeInterval, attempt: Int) -> URL? {
+        if quality == .sub && !substreamDisplayedFrame { rejectSubstream() }
+        else if quality == .main && !substreamRejected && attempt >= 2 && recordedSubstream != nil {
+            quality = .sub
+            substreamDisplayedFrame = false
+        }
+        let source = quality == .sub ? (recordedSubstream ?? main) : main
+        if elapsed == 0 { return source }
+        if let resumed = RecordingPlayback.resume(source, elapsedSeconds: elapsed) { return resumed }
+        if quality == .sub {
+            rejectSubstream()
+            return RecordingPlayback.resume(main, elapsedSeconds: elapsed)
+        }
+        return nil
+    }
+}
+
 public enum RecordingPlayback {
+    public static func duration(_ url: URL) -> TimeInterval? {
+        guard let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
+              let start = items.first(where: { $0.name.lowercased() == "starttime" })?.value,
+              let end = items.first(where: { $0.name.lowercased() == "endtime" })?.value else { return nil }
+        let format = DateFormatter()
+        format.locale = Locale(identifier: "en_US_POSIX")
+        format.timeZone = TimeZone(secondsFromGMT: 0)
+        format.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
+        guard let from = format.date(from: start), let through = format.date(from: end), through > from else { return nil }
+        return through.timeIntervalSince(from)
+    }
+
     public static func resume(_ url: URL, elapsedSeconds: TimeInterval) -> URL? {
         guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
               var items = parts.queryItems,
@@ -249,7 +314,8 @@ public enum RecordingSearch {
         }
     }
 
-    public static func request(channel: Int, start: Date, end: Date, position: Int = 0) -> Data {
+    public static func request(channel: Int, start: Date, end: Date, position: Int = 0,
+                               quality: StreamQuality = .main) -> Data {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         formatter.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -257,7 +323,7 @@ public enum RecordingSearch {
         <?xml version="1.0" encoding="utf-8"?>
         <CMSearchDescription>
         <searchID>\(UUID().uuidString)</searchID>
-        <trackIDList><trackID>\(channel * 100 + 1)</trackID></trackIDList>
+        <trackIDList><trackID>\(channel * 100 + quality.rawValue)</trackID></trackIDList>
         <timeSpanList><timeSpan><startTime>\(formatter.string(from: start))</startTime><endTime>\(formatter.string(from: end))</endTime></timeSpan></timeSpanList>
         <maxResults>100</maxResults>
         <searchResultPosition>\(max(0, position))</searchResultPosition>
@@ -293,6 +359,7 @@ private final class SearchParser: NSObject, XMLParserDelegate {
     private var start = ""
     private var end = ""
     private var uri = ""
+    private var kind: RecordingKind = .continuous
 
     func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
         let tag = elementName.split(separator: ":").last.map(String.init) ?? elementName
@@ -302,6 +369,7 @@ private final class SearchParser: NSObject, XMLParserDelegate {
             start = ""
             end = ""
             uri = ""
+            kind = .continuous
         }
         currentTag = tag
         text = ""
@@ -325,11 +393,17 @@ private final class SearchParser: NSObject, XMLParserDelegate {
             case "startTime": start = value
             case "endTime": end = value
             case "playbackURI": uri = value
+            case "metadataDescriptor":
+                let descriptor = value.lowercased()
+                if descriptor.contains("manual") { kind = .manual }
+                else if ["motion", "alarm", "event", "vca"].contains(where: descriptor.contains) { kind = .event }
+                else if descriptor.contains("timing") || descriptor.contains("continuous") { kind = .continuous }
+                else { kind = .unknown }
             case "searchMatchItem":
                 let formatter = ISO8601DateFormatter()
                 formatter.formatOptions = [.withInternetDateTime]
                 if let from = formatter.date(from: start), let to = formatter.date(from: end), let url = URL(string: uri) {
-                    recordings.append(Recording(start: from, end: to, playbackURI: url))
+                    recordings.append(Recording(start: from, end: to, playbackURI: url, kind: kind))
                 }
                 insideMatch = false
             default: break
